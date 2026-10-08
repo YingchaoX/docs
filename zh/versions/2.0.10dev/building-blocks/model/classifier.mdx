@@ -1,0 +1,113 @@
+---
+title: "分类模型"
+description: "通过命名问题对文本和图片进行分类，并获取概率结果。"
+---
+
+分类模型围绕同一份输入回答多个命名问题，返回结构化结果。开发者可以使用 `JevClassifierModel` 调用 TypeSafe Jev，或使用 `OpenAIClassifierModel` 调用 [OpenAI Decisions API](https://developers.openai.com/api/docs/guides/decisions)。
+
+根据任务选择问题类型：
+
+| 问题 | 返回结果 |
+| --- | --- |
+| `BinaryQuestion` | 某个判断为真的概率 |
+| `ChoiceQuestion` | 选中的类别、置信度和各选项的概率 |
+| `ScoreQuestion` | 对有序等级按概率加权得到的分数 |
+
+## 使用 OpenAI Decisions
+
+安装兼容的 OpenAI SDK，并设置 `OPENAI_API_KEY`。Decisions 适配器要求 `openai>=3.26.0`；AgentScope 其他 OpenAI 功能的依赖要求保持不变。
+
+```bash 安装
+pip install agentscope 'openai>=3.26.0'
+```
+
+下面的示例对同一条工单提问两次，通过 `response.content` 按名称读取答案。
+
+```python 工单分类
+import asyncio
+import os
+from dataclasses import asdict
+
+from agentscope.classifier import (
+    BinaryQuestion, ChoiceQuestion, OpenAIClassifierModel, RefusalAnswer,
+)
+from agentscope.credential import OpenAICredential
+
+async def main():
+    model = OpenAIClassifierModel(
+        OpenAICredential(api_key=os.environ["OPENAI_API_KEY"]),
+        model="gpt-6-luna",
+    )
+    try:
+        response = await model(
+            state="Charged twice. Please refund the extra charge.",
+            questions={
+                "refund": BinaryQuestion(instructions="Is a refund requested?"),
+                "route": ChoiceQuestion(
+                    instructions="Select a department.",
+                    criteria={"billing": "Charges and refunds.", "other": None},
+                ),
+            },
+        )
+        # A refusal affects only its own question.
+        for name, answer in response.content.items():
+            if isinstance(answer, RefusalAnswer):
+                print(f"{name}: refused")
+            else:
+                print(name, asdict(answer))
+    finally:
+        await model.client.close()
+
+asyncio.run(main())
+```
+
+预期退款请求的概率较高，分类结果为 `billing`。模型结果可能变化。评分等级从零开始，分数可以是小数。置信度保留 API 返回的原值，不一定等于最大的选项概率。
+
+`state` 也接受字典，OpenAI 适配器会将其序列化为 JSON 文本。未提供 `instructions` 时，问题名称会用作指令；设置了 `BinaryCriteria.true` 或 `.false` 时，对应的结果描述会追加到指令中。
+
+## 输入图片
+
+调用 OpenAI Decisions 时，可以传入由 `TextBlock` 和图片 `DataBlock` 组成的有序列表。图片必须使用 `Base64Source`，支持多张图片。适配器不读取文件或下载 URL；不支持的来源和媒体类型会抛出 `ValueError`。
+
+下面的示例自行读取 PNG 图片，并提问一个视觉判断问题：
+
+```python 图片分类
+import asyncio
+import base64
+import os
+from dataclasses import asdict
+from pathlib import Path
+
+from agentscope.classifier import BinaryQuestion, OpenAIClassifierModel
+from agentscope.credential import OpenAICredential
+from agentscope.message import Base64Source, DataBlock, TextBlock
+
+async def main():
+    model = OpenAIClassifierModel(
+        OpenAICredential(api_key=os.environ["OPENAI_API_KEY"]),
+    )
+    try:
+        response = await model(
+            state=[
+                TextBlock(text="Inspect this image."),
+                DataBlock(source=Base64Source(
+                    data=base64.b64encode(Path("image.png").read_bytes()).decode("ascii"),
+                    media_type="image/png",
+                )),
+            ],
+            questions={"red": BinaryQuestion(instructions="Is the image mostly red?")},
+        )
+        print(asdict(response))
+    finally:
+        await model.client.close()
+
+asyncio.run(main())
+```
+
+## 处理拒绝和错误
+
+OpenAI 的某个答案可能是 `RefusalAnswer`，序列化结果为 `{"type": "refusal_answer"}`。同批其他问题的答案仍然保留。拒绝结果没有概率、分数或解释，开发者应显式处理，不能将其当作否定答案。Jev 原有的答案类型保持不变。
+
+SDK 负责 API 异常和重试。通过 `OpenAIClassifierModel` 的 `timeout` 和 `max_retries` 设置超时与重试次数；调用时可通过关键字参数传入 `safety_identifier`、`extra_headers` 等选项。`response.usage` 包含 token 用量和调用耗时。
+
+该模型也可用于 `ModelRouterMiddleware`。路由问题被拒绝时，中间件保留智能体原有模型。路由仍使用最近的用户文本；图片分类通过直接调用分类模型使用。

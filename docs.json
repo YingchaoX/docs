@@ -48,7 +48,8 @@
                           "en/versions/2.0.10dev/building-blocks/model/overview",
                           "en/versions/2.0.10dev/building-blocks/model/llm",
                           "en/versions/2.0.10dev/building-blocks/model/tts",
-                          "en/versions/2.0.10dev/building-blocks/model/embedding"
+                          "en/versions/2.0.10dev/building-blocks/model/embedding",
+                          "en/versions/2.0.10dev/building-blocks/model/classifier"
                         ]
                       },
                       {
@@ -1079,7 +1080,8 @@
                           "zh/versions/2.0.10dev/building-blocks/model/overview",
                           "zh/versions/2.0.10dev/building-blocks/model/llm",
                           "zh/versions/2.0.10dev/building-blocks/model/tts",
-                          "zh/versions/2.0.10dev/building-blocks/model/embedding"
+                          "zh/versions/2.0.10dev/building-blocks/model/embedding",
+                          "zh/versions/2.0.10dev/building-blocks/model/classifier"
                         ]
                       },
                       {

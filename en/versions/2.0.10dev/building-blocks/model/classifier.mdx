@@ -1,0 +1,113 @@
+---
+title: "Classifiers"
+description: "Classify text and images with named questions and probabilistic answers."
+---
+
+Classifier models evaluate shared input against named questions and return typed answers. Use `JevClassifierModel` for TypeSafe Jev or `OpenAIClassifierModel` for the [OpenAI Decisions API](https://developers.openai.com/api/docs/guides/decisions).
+
+The question types describe the decision to make:
+
+| Question | Result |
+| --- | --- |
+| `BinaryQuestion` | Probability that a statement is true |
+| `ChoiceQuestion` | Selected option, confidence, and option probabilities |
+| `ScoreQuestion` | Probability-weighted score over ordered levels |
+
+## Use OpenAI Decisions
+
+Install a compatible OpenAI SDK and set `OPENAI_API_KEY`. The Decisions adapter requires `openai>=3.26.0`; other AgentScope OpenAI integrations retain their existing dependency requirements.
+
+```bash Install
+pip install agentscope 'openai>=3.26.0'
+```
+
+This example asks two questions about the same ticket. Use `response.content` to access answers by question name.
+
+```python Classify A Ticket
+import asyncio
+import os
+from dataclasses import asdict
+
+from agentscope.classifier import (
+    BinaryQuestion, ChoiceQuestion, OpenAIClassifierModel, RefusalAnswer,
+)
+from agentscope.credential import OpenAICredential
+
+async def main():
+    model = OpenAIClassifierModel(
+        OpenAICredential(api_key=os.environ["OPENAI_API_KEY"]),
+        model="gpt-6-luna",
+    )
+    try:
+        response = await model(
+            state="Charged twice. Please refund the extra charge.",
+            questions={
+                "refund": BinaryQuestion(instructions="Is a refund requested?"),
+                "route": ChoiceQuestion(
+                    instructions="Select a department.",
+                    criteria={"billing": "Charges and refunds.", "other": None},
+                ),
+            },
+        )
+        # A refusal affects only its own question.
+        for name, answer in response.content.items():
+            if isinstance(answer, RefusalAnswer):
+                print(f"{name}: refused")
+            else:
+                print(name, asdict(answer))
+    finally:
+        await model.client.close()
+
+asyncio.run(main())
+```
+
+Expect a high refund probability and a `billing` choice. Results are model outputs and may vary. Scores use zero-based levels and can be fractional. A confidence value is preserved as returned by the API; it need not equal the largest option probability.
+
+`state` also accepts a dictionary, which the OpenAI adapter serializes as JSON text. If `instructions` is omitted, the question name is used as the instruction. `BinaryCriteria.true` and `.false`, when supplied, are appended as outcome descriptions.
+
+## Include Images
+
+For OpenAI Decisions, pass an ordered list of `TextBlock` and image `DataBlock` objects. Each image must use `Base64Source`. The adapter accepts multiple images, but does not load files or download URL sources; unsupported sources and media types raise `ValueError`.
+
+The following example reads a PNG and asks one visual question:
+
+```python Classify An Image
+import asyncio
+import base64
+import os
+from dataclasses import asdict
+from pathlib import Path
+
+from agentscope.classifier import BinaryQuestion, OpenAIClassifierModel
+from agentscope.credential import OpenAICredential
+from agentscope.message import Base64Source, DataBlock, TextBlock
+
+async def main():
+    model = OpenAIClassifierModel(
+        OpenAICredential(api_key=os.environ["OPENAI_API_KEY"]),
+    )
+    try:
+        response = await model(
+            state=[
+                TextBlock(text="Inspect this image."),
+                DataBlock(source=Base64Source(
+                    data=base64.b64encode(Path("image.png").read_bytes()).decode("ascii"),
+                    media_type="image/png",
+                )),
+            ],
+            questions={"red": BinaryQuestion(instructions="Is the image mostly red?")},
+        )
+        print(asdict(response))
+    finally:
+        await model.client.close()
+
+asyncio.run(main())
+```
+
+## Handle Refusals And Errors
+
+An OpenAI answer may be `RefusalAnswer`, serialized as `{"type": "refusal_answer"}`. Other questions in the same response remain available. A refusal has no probability, score, or explanation. Handle it explicitly instead of interpreting it as a negative answer. Jev's existing answer types are unchanged.
+
+The SDK handles API errors and retries. Set `timeout` and `max_retries` on `OpenAIClassifierModel`; pass per-call options such as `safety_identifier` or `extra_headers` through keyword arguments. Token counts and elapsed time are available in `response.usage`.
+
+You can use this model as the classifier in `ModelRouterMiddleware`. If the routing question is refused, the middleware retains the agent's original model. Routing continues to use the latest user text; image classification is available through direct classifier calls.
